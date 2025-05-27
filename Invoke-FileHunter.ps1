@@ -2,7 +2,7 @@ function Invoke-FileHunter {
     param(
         [string]$Path = "C:\",
         [string[]]$Extensions = @("*.xml", "*.ini", "*.config", "*.txt", "*.ps1", "*.json", "*.log", "*.bat"),
-        [string[]]$SensitiveFiles = @("*.kdbx", "*.sql"),
+        [string[]]$SensitiveFiles = @("*.kdbx","*.kdb", "*.sql"),
         [string[]]$Keywords = @("password", "Password", "pwd", "credential", "secret"),
         [string]$OutputLog = "C:\Users\Public\Documents\FileHunterResults.txt"
     )
