@@ -28,10 +28,10 @@ Invoke-FileHunter -Path "C:\" -OutputLog "C:\Users\Public\Documents\ScanResults.
 
 ### 🧪 Contoh:
 
-```powershell
+
 Invoke-FileHunter -Path "C:\" -OutputLog "C:\Users\Public\Documents\ScanResults.txt"
 Invoke-FileHunter -Path "$env:USERPROFILE\Desktop" -OutputLog "C:\Users\Public\Documents\DesktopScan.txt"
-```
+
 
 ---
 
